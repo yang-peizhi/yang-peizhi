@@ -1,0 +1,137 @@
+library(TwoSampleMR)
+
+# 设置工作目录
+setwd("E:/银屑病 1400 - 副本 (2)/c_小于三个snp的")
+
+# 读取结局数据
+outcome_dat <- read_outcome_data(
+  filename = "银屑病phecode.csv",
+  sep = ",",
+  snp_col = "SNP",
+  beta_col = "beta",
+  se_col = "se",
+  eaf_col= "eaf",
+  effect_allele_col = "effect_allele",
+  other_allele_col = "other_allele",
+  pval_col = "p"
+)
+
+
+
+# 获取目标文件夹下所有的txt文件
+txt_files <- list.files(pattern = "\\.txt$")
+
+
+# 创建一个空的列表，用于保存所有的res_dat对象
+res_dat_list <- list()
+res_or_list <- list()
+
+# 循环处理每个txt文件
+for (file in txt_files) {
+  tryCatch({
+    # 读取暴露数据
+    exp_dat_clumped <- read.table(file, header = TRUE)
+    
+    # 添加条件，确保公式成立
+    valid_snps <- subset(exp_dat_clumped, ((beta.exposure)^2 / (se.exposure)^2) > 10)
+    
+    # 检查是否存在有效的SNPs
+    if (nrow(valid_snps) == 0) {
+      cat("No valid SNPs for MR analysis in file:", file, "\n")
+      next  # 跳过当前迭代，继续下一次迭代
+    }
+    
+    # 直接使用先前读取的结局数据
+    outcome_dat_subset <- outcome_dat[outcome_dat$SNP %in% valid_snps$SNP, ]
+    
+    dat <- harmonise_data(exposure_dat = valid_snps, outcome_dat = outcome_dat_subset)
+   
+     dat_filename <- paste("dat/", gsub("\\.txt$", ".txt.csv", file), sep = "")
+    write.csv(dat, file = dat_filename, row.names = FALSE)
+    
+    # 执行 MR
+    mr_res <- mr(dat)
+    
+    # 提取 odds ratios（如果需要）
+    res_or <- generate_odds_ratios(mr_res)
+    
+    # 将每个 res_dat 对象和 odds ratios 添加到列表中
+    res_dat_list[[length(res_dat_list) + 1]] <- mr_res
+    res_or_list[[length(res_or_list) + 1]] <- res_or
+  }, error = function(e) {
+    cat("Error processing file:", file, "\n")
+    cat("Error message:", conditionMessage(e), "\n")
+    # 如果发生错误，继续下一个文件
+  })
+}
+
+6# 在这里可以对所有 res_dat 对象进行合并或其他汇总操作
+# 例如，如果 res_dat 是数据框，可以使用 do.call 和 rbind 或者 dplyr 的 bind_rows 函数进行合并
+combined_res_dat <- do.call(rbind, res_dat_list)
+combined_res_or <- do.call(rbind, res_or_list)
+
+# 输出或保存合并后的结果
+write.csv(combined_res_dat, file = "combined_res_dat.csv")
+write.csv(combined_res_or, file = "combined_res_or.csv")
+#####显著性结果绘图#####
+
+# 筛选IVW方法P值小于0.05的暴露
+result <- read.csv("combined_res_or.csv",row.names = "X")
+method <- result[result$method=="Inverse variance weighted",]
+id_final <- method[method$pval<0.000085,]$id.exposure
+if(length(id_final)==0){print("没有有显著性结果")}
+write.csv(id_final,"id_final2.csv")
+# 设置目标文件夹路径
+folder_path <- "E:/银屑病 1400 - 副本 (2)/敏感性分析"
+
+# 获取目标文件夹中所有文件
+files <- list.files(path = folder_path, pattern = ".csv", full.names = TRUE)
+#读取ID和名字的表格转换
+id_to_phe <- read.csv("代谢物对应的名称2.csv",col.names = T)
+res_total <- list()
+
+# 循环处理每个文件
+for (file_path in files) {
+  print(paste0("Reading file: ", file_path))
+  
+  # 读取文件
+  dat <- read.csv(file_path)
+  
+  # MR分析
+  res <- generate_odds_ratios(mr_res = mr(dat, method_list = c("mr_ivw", "mr_egger_regression", "mr_weighted_median")))
+  
+  # 异质性分析
+  res_hete <- mr_heterogeneity(dat)
+  
+  res_t <- cbind(merge(x = res, y = res_hete, by = "method", all.x = T), mr_pleiotropy_test(dat)[, c("egger_intercept", "pval")])
+  
+  # 水平多效性
+  res_total[[length(res_total) + 1]] <- res_t
+  
+  # 散点图
+  p_scat <- mr_scatter_plot(mr_results = mr(dat, method_list = c("mr_ivw", "mr_egger_regression", "mr_weighted_median")), dat)
+  pdf(file = file.path(folder_path, gsub(".csv", "_scatter.pdf", basename(file_path))), width = 10, height = 10)
+  print(p_scat)
+  dev.off()
+  
+  # Leave one out
+  single <- mr_leaveoneout(dat)
+  p_loo <- mr_leaveoneout_plot(single)
+  pdf(file = file.path(folder_path, gsub(".csv", "_leaveoneout.pdf", basename(file_path))), width = 10, height = 10)
+  print(p_loo)
+  dev.off()
+  
+  # 漏斗图
+  p_funnel <- mr_funnel_plot(singlesnp_results = single)
+  pdf(file = file.path(folder_path, gsub(".csv", "_funnel.pdf", basename(file_path))), width = 10, height = 10)
+  print(p_funnel)
+  dev.off()
+}
+result_significance <- do.call(rbind,res_total)
+id_to_phe$编号 <- paste0(id_to_phe$编号)
+
+
+result_significance<-merge(x=result_significance,y=id_to_phe,by.x = 'id.exposure.x',by.y = "编号")
+result_significance$exposure.x <- result_significance$Metabolites
+
+write.csv(result_significance,file = "result_significance.csv")
